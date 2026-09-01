@@ -1,0 +1,61 @@
+name: Fix Parts Needed Import
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-import.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update import behavior
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('📥 Import Inventory', '📥 Import Parts Still Needed')
+          start = s.find('function importInventory(file){')
+          end = s.find("$('partsTab').onclick", start)
+          if start < 0 or end < 0:
+              raise SystemExit('Could not locate importInventory function')
+          new_func = r'''function importInventory(file){
+          if(section!=='parts'){alert('Switch to Parts before importing.');return}
+          const reader=new FileReader();
+          reader.onload=()=>{try{
+            const rows=parseCSV(String(reader.result||''));
+            if(rows.length<2)throw Error('No inventory rows found');
+            const headers=rows[0].map(x=>x.trim().toLowerCase());
+            const p=headers.findIndex(x=>['part number','partnumber','mfgnmbr','mfg number','mfg'].includes(x));
+            const n=headers.findIndex(x=>['qty needed','quantity needed','needed'].includes(x));
+            if(p<0||n<0)throw Error('This file must contain Part Number and Qty Needed columns.');
+            const stillNeeded={};
+            for(let i=1;i<rows.length;i++){
+              const part=(rows[i][p]||'').trim();
+              const need=parseFloat(String(rows[i][n]||'').replace(/,/g,''));
+              if(part&&Number.isFinite(need))stillNeeded[part.toLowerCase()]=Math.max(0,Math.floor(need));
+            }
+            const next={};
+            PARTS.forEach(r=>{
+              const k=key(r),part=String(r.MfgNmbr||'').trim().toLowerCase(),required=req(r),need=stillNeeded[part]||0;
+              next[k]=Math.max(0,required-need);
+            });
+            Object.keys(qty).forEach(k=>{if(k.startsWith('tools|'))next[k]=qty[k]});
+            qty=next;save();mode='needed';search.value='';render();
+            alert('Imported Parts Still Needed. '+Object.keys(stillNeeded).length+' parts remain to be found. Everything else was marked verified.');
+          }catch(e){alert('Import failed: '+e.message)}};
+          reader.readAsText(file)}
+          '''
+          s = s[:start] + new_func + s[end:]
+          p.write_text(s, encoding='utf-8')
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html
+          git diff --cached --quiet || git commit -m 'Fix Parts Still Needed import'
+          git push
